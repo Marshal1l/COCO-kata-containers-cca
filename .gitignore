@@ -16,3 +16,11 @@ src/agent/protocols/src/*.rs
 build
 src/tools/log-parser/kata-log-parser
 tools/packaging/static-build/agent/install_libseccomp.sh
+
+# COCO local outputs
+src/runtime/kata-runtime
+src/runtime/kata-monitor
+src/runtime/containerd-shim-kata-v2
+src/runtime/.git-commit*
+src/runtime/config/configuration-*.toml
+*.log
