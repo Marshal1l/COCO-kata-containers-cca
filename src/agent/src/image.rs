@@ -8,6 +8,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use image_rs::image::ImageClient;
 use image_rs::shared_rootfs;
+use image_rs::vsock_ttrpc_client;
 use kata_sys_util::validate::verify_id;
 use oci_spec::runtime as oci;
 use safe_path::scoped_join;
@@ -21,6 +22,7 @@ use std::thread;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
+use crate::config::ImageCVMRole;
 use crate::network::setup_guest_dns;
 use crate::rpc::CONTAINER_BASE;
 use crate::AGENT_CONFIG;
@@ -323,6 +325,11 @@ pub async fn set_proxy_env_vars() {
 pub async fn init_image_service() {
     let image_service = ImageService::new();
     *IMAGE_SERVICE.lock().await = Some(image_service);
+    if AGENT_CONFIG.image_cvm_role == ImageCVMRole::Runtime {
+        tokio::spawn(async {
+            vsock_ttrpc_client::preconnect_fast_image_share().await;
+        });
+    }
 }
 
 pub async fn pull_image(

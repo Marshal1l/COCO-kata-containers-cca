@@ -31,6 +31,8 @@ const GUEST_COMPONENTS_REST_API_OPTION: &str = "agent.guest_components_rest_api"
 const GUEST_COMPONENTS_PROCS_OPTION: &str = "agent.guest_components_procs";
 #[cfg(feature = "guest-pull")]
 const IMAGE_REGISTRY_AUTH_OPTION: &str = "agent.image_registry_auth";
+#[cfg(feature = "guest-pull")]
+const IMAGE_CVM_ROLE_OPTION: &str = "agent.image_cvm_role";
 
 // Configure the proxy settings for HTTPS requests in the guest,
 // to solve the problem of not being able to access the specified image in some cases.
@@ -64,6 +66,9 @@ const ERR_INVALID_CONTAINER_PIPE_NEGATIVE: &str = "container pipe size should no
 
 const ERR_INVALID_GUEST_COMPONENTS_REST_API_VALUE: &str = "invalid guest components rest api feature given. Valid values are `all`, `attestation`, `resource`";
 const ERR_INVALID_GUEST_COMPONENTS_PROCS_VALUE: &str = "invalid guest components process param given. Valid values are `attestation-agent`, `confidential-data-hub`, `api-server-rest`, or `none`";
+#[cfg(feature = "guest-pull")]
+const ERR_INVALID_IMAGE_CVM_ROLE_VALUE: &str =
+    "invalid image CVM role given. Valid values are `image`, `runtime`, or `none`";
 
 #[derive(Clone, Copy, Debug, Default, Display, Deserialize, EnumString, PartialEq)]
 // Features seem to typically be in kebab-case format, but we only have single words at the moment
@@ -90,6 +95,17 @@ pub enum GuestComponentsProcs {
     ConfidentialDataHub,
 }
 
+#[cfg(feature = "guest-pull")]
+#[derive(Clone, Copy, Debug, Default, Display, Deserialize, EnumString, PartialEq)]
+#[strum(serialize_all = "kebab-case")]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageCVMRole {
+    #[default]
+    None,
+    Image,
+    Runtime,
+}
+
 #[derive(Debug)]
 pub struct AgentConfig {
     pub debug_console: bool,
@@ -110,6 +126,8 @@ pub struct AgentConfig {
     pub guest_components_procs: GuestComponentsProcs,
     #[cfg(feature = "guest-pull")]
     pub image_registry_auth: String,
+    #[cfg(feature = "guest-pull")]
+    pub image_cvm_role: ImageCVMRole,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,6 +149,8 @@ pub struct AgentConfigBuilder {
     pub guest_components_procs: Option<GuestComponentsProcs>,
     #[cfg(feature = "guest-pull")]
     pub image_registry_auth: Option<String>,
+    #[cfg(feature = "guest-pull")]
+    pub image_cvm_role: Option<ImageCVMRole>,
 }
 
 macro_rules! config_override {
@@ -198,6 +218,8 @@ impl Default for AgentConfig {
             guest_components_procs: GuestComponentsProcs::default(),
             #[cfg(feature = "guest-pull")]
             image_registry_auth: String::from(""),
+            #[cfg(feature = "guest-pull")]
+            image_cvm_role: ImageCVMRole::default(),
         }
     }
 }
@@ -237,6 +259,8 @@ impl FromStr for AgentConfig {
         config_override!(agent_config_builder, agent_config, guest_components_procs);
         #[cfg(feature = "guest-pull")]
         config_override!(agent_config_builder, agent_config, image_registry_auth);
+        #[cfg(feature = "guest-pull")]
+        config_override!(agent_config_builder, agent_config, image_cvm_role);
 
         Ok(agent_config)
     }
@@ -358,6 +382,13 @@ impl AgentConfig {
                 IMAGE_REGISTRY_AUTH_OPTION,
                 config.image_registry_auth,
                 get_string_value
+            );
+            #[cfg(feature = "guest-pull")]
+            parse_cmdline_param!(
+                param,
+                IMAGE_CVM_ROLE_OPTION,
+                config.image_cvm_role,
+                get_image_cvm_role_value
             );
         }
 
@@ -539,6 +570,16 @@ fn get_guest_components_procs_value(param: &str) -> Result<GuestComponentsProcs>
     let value = fields[1..].join("=");
     GuestComponentsProcs::from_str(&value)
         .map_err(|_| anyhow!(ERR_INVALID_GUEST_COMPONENTS_PROCS_VALUE))
+}
+
+#[cfg(feature = "guest-pull")]
+fn get_image_cvm_role_value(param: &str) -> Result<ImageCVMRole> {
+    let fields: Vec<&str> = param.split('=').collect();
+    ensure!(fields.len() >= 2, ERR_INVALID_GET_VALUE_PARAM);
+    ensure!(!fields[0].is_empty(), ERR_INVALID_GET_VALUE_NO_NAME);
+
+    let value = fields[1..].join("=");
+    ImageCVMRole::from_str(&value).map_err(|_| anyhow!(ERR_INVALID_IMAGE_CVM_ROLE_VALUE))
 }
 
 #[cfg(test)]

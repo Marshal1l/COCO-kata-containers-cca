@@ -79,7 +79,13 @@ const (
 	// defined by the orchestrator.
 	resCtrlKataOverheadID = "/kata_overhead/"
 
-	sandboxMountsDir = "sandbox-mounts"
+	sandboxMountsDir         = "sandbox-mounts"
+	imageCVMAnnotation       = "io.kata-containers.is-image-cvm"
+	imageNameAnnotation      = "io.kubernetes.cri.image-name"
+	agentImageCVMRoleParam   = "agent.image_cvm_role"
+	agentImageCVMRefParam    = "agent.image_cvm_ref"
+	agentImageCVMRoleImage   = "image"
+	agentImageCVMRoleRuntime = "runtime"
 
 	// Restricted permission for shared directory managed by virtiofs
 	sharedDirMode = os.FileMode(0700) | os.ModeDir
@@ -686,11 +692,18 @@ func setHypervisorConfigAnnotations(sandboxConfig *SandboxConfig) {
 				sandboxConfig.HypervisorConfig.SandboxNamespace = value
 			}
 		}
-		isImageCvmValue := sandboxConfig.Containers[0].Annotations["io.kata-containers.is-image-cvm"]
+		isImageCvmValue := sandboxConfig.Containers[0].Annotations[imageCVMAnnotation]
 		if isImageCvmValue == "true" {
 			sandboxConfig.HypervisorConfig.IsImageVM = true
+			_ = sandboxConfig.HypervisorConfig.AddKernelParam(Param{Key: agentImageCVMRoleParam, Value: agentImageCVMRoleImage})
 		} else {
 			sandboxConfig.HypervisorConfig.IsImageVM = false
+			if isImageCvmValue == "false" {
+				_ = sandboxConfig.HypervisorConfig.AddKernelParam(Param{Key: agentImageCVMRoleParam, Value: agentImageCVMRoleRuntime})
+				if imageRef := sandboxConfig.Containers[0].Annotations[imageNameAnnotation]; imageRef != "" {
+					_ = sandboxConfig.HypervisorConfig.AddKernelParam(Param{Key: agentImageCVMRefParam, Value: imageRef})
+				}
+			}
 		}
 	}
 }
