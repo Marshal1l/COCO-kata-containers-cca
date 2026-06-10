@@ -10,6 +10,7 @@ use image_rs::image::ImageClient;
 use kata_sys_util::validate::verify_id;
 use oci_spec::runtime as oci;
 use safe_path::scoped_join;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
+use crate::network::setup_guest_dns;
 use crate::rpc::CONTAINER_BASE;
 use crate::AGENT_CONFIG;
 
@@ -25,6 +27,7 @@ const KATA_IMAGE_WORK_DIR: &str = "/run/kata-containers/image/";
 const CONFIG_JSON: &str = "config.json";
 const KATA_PAUSE_BUNDLE: &str = "/pause_bundle";
 const K8S_IS_IMAGE_CVM: &str = "io.kata-containers.is-image-cvm";
+const NERDCTL_DNS: &str = "nerdctl/dns";
 const K8S_CONTAINER_TYPE_KEYS: [&str; 2] = [
     "io.kubernetes.cri.container-type",
     "io.kubernetes.cri-o.ContainerType",
@@ -49,13 +52,43 @@ fn copy_if_not_exists(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct NerdctlDNSConfig {
+    #[serde(default, rename = "DNSServers")]
+    dns_servers: Option<Vec<String>>,
+}
+
+fn setup_dns_for_image_pull(image_metadata: &HashMap<String, String>) -> Result<()> {
+    let Some(raw_dns) = image_metadata.get(NERDCTL_DNS) else {
+        return Ok(());
+    };
+
+    let dns_config: NerdctlDNSConfig =
+        serde_json::from_str(raw_dns).context("parse nerdctl DNS metadata")?;
+    let dns_lines: Vec<String> = dns_config
+        .dns_servers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|server| server.trim().to_string())
+        .filter(|server| !server.is_empty())
+        .map(|server| format!("nameserver {server}"))
+        .collect();
+
+    if dns_lines.is_empty() {
+        return Ok(());
+    }
+
+    info!(sl(), "setup DNS for image pull"; "dns" => format!("{dns_lines:?}"));
+    setup_guest_dns(sl(), &dns_lines).context("setup DNS for image pull")
+}
+
 pub struct ImageService {
     image_client: ImageClient,
 }
 
 impl ImageService {
     pub fn new() -> Self {
-        let mut image_client = ImageClient::new(PathBuf::from(KATA_IMAGE_WORK_DIR));
+        let image_client = ImageClient::new(PathBuf::from(KATA_IMAGE_WORK_DIR));
         #[cfg(feature = "guest-pull")]
         if !AGENT_CONFIG.image_registry_auth.is_empty() {
             let registry_auth = &AGENT_CONFIG.image_registry_auth;
@@ -132,6 +165,7 @@ impl ImageService {
         image_metadata: &HashMap<String, String>,
     ) -> Result<String> {
         info!(sl(), "image metadata: {image_metadata:?}");
+        setup_dns_for_image_pull(image_metadata)?;
 
         //Check whether the image is for sandbox or for container.
         let mut is_sandbox = false;

@@ -86,7 +86,7 @@ const (
 type customRequestTimeoutKeyType struct{}
 
 var (
-	checkRequestTimeout              = 30 * time.Second
+	checkRequestTimeout              = 300 * time.Second
 	createContainerRequestTimeout    = 60 * time.Second
 	defaultRequestTimeout            = 60 * time.Second
 	remoteRequestTimeout             = 300 * time.Second

@@ -252,6 +252,10 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 				continue
 			}
 
+			if addr.IP.To4() == nil {
+				continue
+			}
+
 			netMask, _ := addr.Mask.Size()
 			ipAddress := pbTypes.IPAddress{
 				Family:  pbTypes.IPFamily_v4,
@@ -259,9 +263,6 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 				Mask:    fmt.Sprintf("%d", netMask),
 			}
 
-			if addr.IP.To4() == nil {
-				ipAddress.Family = pbTypes.IPFamily_v6
-			}
 			ipAddresses = append(ipAddresses, &ipAddress)
 		}
 		noarp := endpoint.Properties().Iface.RawFlags & unix.IFF_NOARP
@@ -281,6 +282,10 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 			var r pbTypes.Route
 
 			if !validGuestRoute(route) {
+				continue
+			}
+
+			if isIPv6Route(route) {
 				continue
 			}
 
@@ -310,6 +315,10 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 				continue
 			}
 
+			if neigh.IP.To4() == nil {
+				continue
+			}
+
 			n.Device = endpoint.Name()
 			n.State = int32(neigh.State)
 			n.Flags = int32(neigh.Flags)
@@ -322,15 +331,32 @@ func generateVCNetworkStructures(ctx context.Context, network Network) ([]*pbTyp
 				Family:  pbTypes.IPFamily_v4,
 				Address: neigh.IP.String(),
 			}
-			if neigh.IP.To4() == nil {
-				n.ToIPAddress.Family = pbTypes.IPFamily_v6
-			}
 
 			neighs = append(neighs, &n)
 		}
 	}
 
 	return ifaces, routes, neighs, nil
+}
+
+func isIPv6Route(route netlink.Route) bool {
+	if route.Family == netlink.FAMILY_V6 || route.Family == unix.AF_INET6 {
+		return true
+	}
+
+	if route.Dst != nil && route.Dst.IP.To4() == nil {
+		return true
+	}
+
+	if route.Gw != nil && route.Gw.To4() == nil {
+		return true
+	}
+
+	if route.Src != nil && route.Src.To4() == nil {
+		return true
+	}
+
+	return false
 }
 
 func createNetworkInterfacePair(idx int, ifName string, interworkingModel NetInterworkingModel) (NetworkInterfacePair, error) {

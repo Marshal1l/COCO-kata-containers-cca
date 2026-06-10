@@ -89,7 +89,6 @@ func TestGenerateInterfacesAndRoutes(t *testing.T) {
 	expectedAddresses := []*pbTypes.IPAddress{
 		{Family: utils.ConvertAddressFamily(netlink.FAMILY_V4), Address: "172.17.0.2", Mask: "16"},
 		{Family: utils.ConvertAddressFamily(netlink.FAMILY_V4), Address: "182.17.0.2", Mask: "16"},
-		{Family: utils.ConvertAddressFamily(netlink.FAMILY_V6), Address: "2001:db8:1::242:ac11:2", Mask: "64"},
 	}
 
 	expectedInterfaces := []*pbTypes.Interface{
@@ -99,8 +98,6 @@ func TestGenerateInterfacesAndRoutes(t *testing.T) {
 	expectedRoutes := []*pbTypes.Route{
 		{Dest: "", Gateway: "172.17.0.1", Device: "eth0", Source: "", Scope: uint32(254)},
 		{Dest: "172.17.0.0/16", Gateway: "172.17.0.1", Device: "eth0", Source: "172.17.0.2"},
-		{Dest: "2001:db8:1::/64", Gateway: "", Device: "eth0", Source: ""},
-		{Dest: "", Gateway: "2001:db8:1::1", Device: "eth0", Source: ""},
 	}
 
 	expectedNeighs := []*pbTypes.ARPNeighbor{

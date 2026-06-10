@@ -61,7 +61,7 @@ const (
 
 const (
 	//fcTimeout is the maximum amount of time in seconds to wait for the VMM to respond
-	fcTimeout = 10
+	fcTimeout = 120
 	fcSocket  = "firecracker.socket"
 	//Name of the files within jailer root
 	//Having predefined names helps with Cleanup
@@ -84,6 +84,8 @@ const (
 	fcMetricsFifo = "metrics.fifo"
 
 	defaultFcConfig = "fcConfig.json"
+
+	fcDescribeInstanceTimeout = 500 * time.Millisecond
 )
 
 // Specify the minimum version of firecracker supported
@@ -275,7 +277,8 @@ func (fc *firecracker) newFireClient(ctx context.Context) *client.FirecrackerAPI
 }
 
 func (fc *firecracker) vmRunning(ctx context.Context) bool {
-	resp, err := fc.client(ctx).Operations.DescribeInstance(nil)
+	params := ops.NewDescribeInstanceParamsWithTimeout(fcDescribeInstanceTimeout)
+	resp, err := fc.client(ctx).Operations.DescribeInstance(params)
 	if err != nil {
 		fc.Logger().WithError(err).Error("getting vm status failed")
 		return false

@@ -81,7 +81,7 @@ strum = "0.26.2"
 strum_macros = "0.26.2"
 
 # Image pull/decrypt
-image-rs = { path = "/home/mzh/OPCCA/vsock-ttrpc/guest-components/image-rs" }
+image-rs = { path = "../../../guest-components/image-rs" }
 # Agent Policy
 regorus = { version = "0.1.4", default-features = false, features = [
     "arc",

@@ -8,6 +8,7 @@ package virtcontainers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -36,6 +37,14 @@ const (
 	defaultFilePerms = 0600
 	defaultQlen      = 1500
 )
+
+func newRouteHandle() (*netlink.Handle, error) {
+	return netlink.NewHandle(unix.NETLINK_ROUTE)
+}
+
+func newRouteHandleAt(ns netns.NsHandle) (*netlink.Handle, error) {
+	return netlink.NewHandleAt(ns, unix.NETLINK_ROUTE)
+}
 
 // LinuxNetwork represents a sandbox networking setup.
 type LinuxNetwork struct {
@@ -302,7 +311,7 @@ func (n *LinuxNetwork) GetEndpointsNum() (int, error) {
 	}
 	defer netnsHandle.Close()
 
-	netlinkHandle, err := netlink.NewHandleAt(netnsHandle)
+	netlinkHandle, err := newRouteHandleAt(netnsHandle)
 	if err != nil {
 		return 0, err
 	}
@@ -322,12 +331,12 @@ func (n *LinuxNetwork) GetEndpointsNum() (int, error) {
 func (n *LinuxNetwork) addAllEndpoints(ctx context.Context, s *Sandbox, hotplug bool) error {
 	netnsHandle, err := netns.GetFromPath(n.netNSPath)
 	if err != nil {
-		networkLogger().Info("------- fail to GetFromPath: path: %v", n.netNSPath)
+		networkLogger().Infof("------- fail to GetFromPath: path: %v", n.netNSPath)
 		return err
 	}
 	defer netnsHandle.Close()
 
-	netlinkHandle, err := netlink.NewHandleAt(netnsHandle)
+	netlinkHandle, err := newRouteHandleAt(netnsHandle)
 	if err != nil {
 		networkLogger().Info("------- fail at netlink.NewHandleAt ")
 		return err
@@ -836,7 +845,7 @@ func tapNetworkPair(ctx context.Context, endpoint Endpoint, queues int, disableV
 	span, _ := networkTrace(ctx, "tapNetworkPair", endpoint)
 	defer span.End()
 
-	netHandle, err := netlink.NewHandle()
+	netHandle, err := newRouteHandle()
 	if err != nil {
 		return err
 	}
@@ -933,7 +942,7 @@ func setupTCFiltering(ctx context.Context, endpoint Endpoint, queues int, disabl
 	span, _ := networkTrace(ctx, "setupTCFiltering", endpoint)
 	defer span.End()
 
-	netHandle, err := netlink.NewHandle()
+	netHandle, err := newRouteHandle()
 	if err != nil {
 		return err
 	}
@@ -1023,6 +1032,40 @@ func addQdiscIngress(index int) error {
 	return nil
 }
 
+func redirectActions(destIndex int) []netlink.Action {
+	return []netlink.Action{
+		&netlink.MirredAction{
+			ActionAttrs: netlink.ActionAttrs{
+				Action: netlink.TC_ACT_STOLEN,
+			},
+			MirredAction: netlink.TCA_EGRESS_REDIR,
+			Ifindex:      destIndex,
+		},
+	}
+}
+
+func addRedirectU32Filter(sourceIndex, destIndex int) error {
+	return netlink.FilterAdd(&netlink.U32{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: sourceIndex,
+			Parent:    netlink.MakeHandle(0xffff, 0),
+			Protocol:  unix.ETH_P_ALL,
+		},
+		Actions: redirectActions(destIndex),
+	})
+}
+
+func addRedirectFlowerFilter(sourceIndex, destIndex int) error {
+	return netlink.FilterAdd(&netlink.Flower{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: sourceIndex,
+			Parent:    netlink.MakeHandle(0xffff, 0),
+			Protocol:  unix.ETH_P_ALL,
+		},
+		Actions: redirectActions(destIndex),
+	})
+}
+
 // addRedirectTCFilter adds a tc filter for device with index "sourceIndex".
 // All traffic for interface with index "sourceIndex" is redirected to interface with
 // index "destIndex"
@@ -1030,25 +1073,14 @@ func addQdiscIngress(index int) error {
 // This is equivalent to calling:
 // `tc filter add dev source parent ffff: protocol all u32 match u8 0 0 action mirred egress redirect dev dest`
 func addRedirectTCFilter(sourceIndex, destIndex int) error {
-	filter := &netlink.U32{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: sourceIndex,
-			Parent:    netlink.MakeHandle(0xffff, 0),
-			Protocol:  unix.ETH_P_ALL,
-		},
-		Actions: []netlink.Action{
-			&netlink.MirredAction{
-				ActionAttrs: netlink.ActionAttrs{
-					Action: netlink.TC_ACT_STOLEN,
-				},
-				MirredAction: netlink.TCA_EGRESS_REDIR,
-				Ifindex:      destIndex,
-			},
-		},
+	if err := addRedirectU32Filter(sourceIndex, destIndex); err == nil {
+		return nil
+	} else if !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.EOPNOTSUPP) {
+		return fmt.Errorf("Failed to add u32 redirect filter for index %d : %s", sourceIndex, err)
 	}
 
-	if err := netlink.FilterAdd(filter); err != nil {
-		return fmt.Errorf("Failed to add filter for index %d : %s", sourceIndex, err)
+	if err := addRedirectFlowerFilter(sourceIndex, destIndex); err != nil {
+		return fmt.Errorf("Failed to add redirect filter for index %d : %s", sourceIndex, err)
 	}
 
 	return nil
@@ -1108,7 +1140,7 @@ func untapNetworkPair(ctx context.Context, endpoint Endpoint) error {
 	span, _ := networkTrace(ctx, "untapNetworkPair", endpoint)
 	defer span.End()
 
-	netHandle, err := netlink.NewHandle()
+	netHandle, err := newRouteHandle()
 	if err != nil {
 		return err
 	}
@@ -1152,7 +1184,7 @@ func removeTCFiltering(ctx context.Context, endpoint Endpoint) error {
 	span, _ := networkTrace(ctx, "removeTCFiltering", endpoint)
 	defer span.End()
 
-	netHandle, err := netlink.NewHandle()
+	netHandle, err := newRouteHandle()
 	if err != nil {
 		return err
 	}
@@ -1398,7 +1430,7 @@ func addIFBDevice() (int, error) {
 		return -1, err
 	}
 
-	netHandle, err := netlink.NewHandle()
+	netHandle, err := newRouteHandle()
 	if err != nil {
 		return -1, err
 	}
@@ -1574,7 +1606,7 @@ func removeTxRateLimiter(endpoint Endpoint, networkNSPath string) error {
 			return err
 		}
 
-		netHandle, err := netlink.NewHandle()
+		netHandle, err := newRouteHandle()
 		if err != nil {
 			return err
 		}

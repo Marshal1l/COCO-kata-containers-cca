@@ -64,7 +64,7 @@ use config::GuestComponentsProcs;
 use mount::{cgroups_mount, general_mount};
 use sandbox::Sandbox;
 use signal::setup_signal_handler;
-use slog::{debug, error, info, o, warn, Logger};
+use slog::{error, info, o, warn, Logger};
 use uevent::watch_uevents;
 
 use futures::future::join_all;
@@ -518,6 +518,7 @@ fn init_attestation_components(logger: &Logger, config: &AgentConfig) -> Result<
     .map_err(|e| anyhow!("launch_process {} failed: {:?}", CDH_PATH, e))?;
 
     let cdh_client = CDHClient::new().context("Failed to create CDH Client")?;
+    launch_image_share_vsock_server(logger)?;
 
     // skip launch of api-server-rest
     if config.guest_components_procs == GuestComponentsProcs::ConfidentialDataHub {
@@ -538,9 +539,27 @@ fn init_attestation_components(logger: &Logger, config: &AgentConfig) -> Result<
     )
     .map_err(|e| anyhow!("launch_process {} failed: {:?}", API_SERVER_PATH, e))?;
 
-    Command::new(VSOCK_TTRPC_SERVER_PATH).spawn()?;
-    info!(logger, "spawning vsock ttrpc server");
     Ok(Some(cdh_client))
+}
+
+fn launch_image_share_vsock_server(logger: &Logger) -> Result<()> {
+    if !Path::new(VSOCK_TTRPC_SERVER_PATH).exists() {
+        warn!(
+            logger,
+            "image-share vsock server binary {} not found; shared-rootfs image cache disabled",
+            VSOCK_TTRPC_SERVER_PATH
+        );
+        return Ok(());
+    }
+
+    Command::new(VSOCK_TTRPC_SERVER_PATH)
+        .spawn()
+        .map_err(|e| anyhow!("launch_process {} failed: {:?}", VSOCK_TTRPC_SERVER_PATH, e))?;
+    info!(
+        logger,
+        "spawning image-share vsock ttrpc server {}", VSOCK_TTRPC_SERVER_PATH
+    );
+    Ok(())
 }
 
 fn wait_for_path_to_exist(logger: &Logger, path: &str, timeout_secs: i32) -> Result<()> {
