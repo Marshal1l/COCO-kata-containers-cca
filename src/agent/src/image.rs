@@ -7,6 +7,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use image_rs::image::ImageClient;
+use image_rs::shared_rootfs;
 use kata_sys_util::validate::verify_id;
 use oci_spec::runtime as oci;
 use safe_path::scoped_join;
@@ -16,6 +17,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
@@ -223,12 +225,17 @@ impl ImageService {
                 .await;
             let duration = start.elapsed();
             match res {
-                Ok(image) => {
+                Ok(image_id) => {
                     info!(
                         sl(),
-                        "[MZH]pull and unpack image {image:?}, cid: {cid:?} succeeded. (pull took: {} ms)", // [修改] 增加耗时日志
+                        "[MZH]pull and unpack image {image_id:?}, cid: {cid:?} succeeded. (pull took: {} ms)",
                         duration.as_millis()
                         );
+                    warm_shared_rootfs_cache_async(
+                        image.to_string(),
+                        image_id,
+                        bundle_path.clone(),
+                    );
                 }
                 Err(e) => {
                     error!(
@@ -243,6 +250,46 @@ impl ImageService {
         let image_bundle_path = scoped_join(&bundle_path, "rootfs")?;
         Ok(image_bundle_path.as_path().display().to_string())
     }
+}
+
+fn warm_shared_rootfs_cache_async(image_ref: String, image_id: String, bundle_path: PathBuf) {
+    if shared_rootfs::read_shared_rootfs_cache_entry(&image_ref)
+        .map(|entry| entry.is_some())
+        .unwrap_or(false)
+    {
+        info!(sl(), "shared rootfs cache already warm"; "image_ref" => image_ref);
+        return;
+    }
+    if shared_rootfs::shared_rootfs_cache_pending(&image_ref) {
+        info!(sl(), "shared rootfs cache warmup already pending"; "image_ref" => image_ref);
+        return;
+    }
+
+    thread::spawn(move || {
+        let start = Instant::now();
+        let result = shared_rootfs::prepare_shared_rootfs_cache_from_bundle(
+            &image_ref,
+            &image_id,
+            &bundle_path,
+        );
+
+        match result {
+            Ok(entry) => info!(
+                sl(),
+                "shared rootfs cache warmup completed";
+                "image_ref" => image_ref,
+                "share_id" => entry.share_id,
+                "elapsed_ms" => start.elapsed().as_millis()
+            ),
+            Err(err) => warn!(
+                sl(),
+                "shared rootfs cache warmup failed";
+                "image_ref" => image_ref,
+                "elapsed_ms" => start.elapsed().as_millis(),
+                "error" => format!("{err:#}")
+            ),
+        }
+    });
 }
 
 /// Set proxy environment from AGENT_CONFIG
