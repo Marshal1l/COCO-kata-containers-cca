@@ -99,11 +99,13 @@ const NAME: &str = "kata-agent";
 const UNIX_SOCKET_PREFIX: &str = "unix://";
 
 const AA_PATH: &str = "/usr/local/bin/attestation-agent";
+const AA_CONFIG_PATH: &str = "/etc/attestation-agent.toml";
 const AA_ATTESTATION_SOCKET: &str =
     "/run/confidential-containers/attestation-agent/attestation-agent.sock";
 const AA_ATTESTATION_URI: &str = concatcp!(UNIX_SOCKET_PREFIX, AA_ATTESTATION_SOCKET);
 
 const CDH_PATH: &str = "/usr/local/bin/confidential-data-hub";
+const CDH_CONFIG_PATH: &str = "/etc/confidential-data-hub.toml";
 const CDH_SOCKET: &str = "/run/confidential-containers/cdh.sock";
 const CDH_SOCKET_URI: &str = concatcp!(UNIX_SOCKET_PREFIX, CDH_SOCKET);
 
@@ -481,7 +483,12 @@ fn init_attestation_components(logger: &Logger, config: &AgentConfig) -> Result<
     launch_process(
         logger,
         AA_PATH,
-        &vec!["--attestation_sock", AA_ATTESTATION_URI],
+        &vec![
+            "--attestation_sock",
+            AA_ATTESTATION_URI,
+            "-c",
+            AA_CONFIG_PATH,
+        ],
         AA_ATTESTATION_SOCKET,
         DEFAULT_LAUNCH_PROCESS_TIMEOUT,
     )
@@ -511,7 +518,7 @@ fn init_attestation_components(logger: &Logger, config: &AgentConfig) -> Result<
     launch_process(
         logger,
         CDH_PATH,
-        &vec![],
+        &vec!["-c", CDH_CONFIG_PATH],
         CDH_SOCKET,
         DEFAULT_LAUNCH_PROCESS_TIMEOUT,
     )

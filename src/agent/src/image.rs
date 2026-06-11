@@ -29,6 +29,7 @@ use crate::AGENT_CONFIG;
 
 const KATA_IMAGE_WORK_DIR: &str = "/run/kata-containers/image/";
 const CONFIG_JSON: &str = "config.json";
+const IMAGE_RS_CONFIG_SEED: &str = "/etc/image-rs-config.json";
 const KATA_PAUSE_BUNDLE: &str = "/pause_bundle";
 const K8S_IS_IMAGE_CVM: &str = "io.kata-containers.is-image-cvm";
 const NERDCTL_DNS: &str = "nerdctl/dns";
@@ -92,7 +93,11 @@ pub struct ImageService {
 
 impl ImageService {
     pub fn new() -> Self {
-        let image_client = ImageClient::new(PathBuf::from(KATA_IMAGE_WORK_DIR));
+        let work_dir = PathBuf::from(KATA_IMAGE_WORK_DIR);
+        if let Err(err) = seed_image_rs_config(&work_dir) {
+            warn!(sl(), "failed to seed image-rs config"; "error" => format!("{err:#}"));
+        }
+        let image_client = ImageClient::new(work_dir);
         #[cfg(feature = "guest-pull")]
         if !AGENT_CONFIG.image_registry_auth.is_empty() {
             let registry_auth = &AGENT_CONFIG.image_registry_auth;
@@ -310,6 +315,21 @@ impl ImageService {
         let image_bundle_path = scoped_join(&bundle_path, "rootfs")?;
         Ok(image_bundle_path.as_path().display().to_string())
     }
+}
+
+fn seed_image_rs_config(work_dir: &Path) -> Result<()> {
+    let seed = Path::new(IMAGE_RS_CONFIG_SEED);
+    if !seed.is_file() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(work_dir)
+        .with_context(|| format!("create image-rs work dir {}", work_dir.display()))?;
+    let dst = work_dir.join(CONFIG_JSON);
+    fs::copy(seed, &dst)
+        .with_context(|| format!("copy {} to {}", seed.display(), dst.display()))?;
+    info!(sl(), "seeded image-rs config"; "path" => dst.display().to_string());
+    Ok(())
 }
 
 fn warm_shared_rootfs_cache_async(

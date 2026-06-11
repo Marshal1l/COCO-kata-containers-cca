@@ -60,6 +60,7 @@ lazy_static! {
         InitMount{fstype: "tmpfs", src: "tmpfs", dest: "/dev/shm", options: vec!["nosuid", "nodev"]},
         InitMount{fstype: "devpts", src: "devpts", dest: "/dev/pts", options: vec!["nosuid", "noexec"]},
         InitMount{fstype: "tmpfs", src: "tmpfs", dest: "/run", options: vec!["nosuid", "nodev"]},
+        InitMount{fstype: "configfs", src: "configfs", dest: "/sys/kernel/config", options: vec!["nosuid", "nodev", "noexec"]},
     ];
 }
 
