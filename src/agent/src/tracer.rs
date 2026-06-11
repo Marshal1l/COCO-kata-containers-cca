@@ -71,8 +71,10 @@ macro_rules! trace_rpc_call {
 
         info!(sl(), "rpc call from shim to agent: {:?}", $name);
 
-        // generate tracing span
-        let rpc_span = span!(tracing::Level::INFO, $name, "mod"="rpc.rs", req=?$req);
+        // generate tracing span. Do not attach the full request: CreateContainer
+        // carries the OCI spec and storage metadata, which is large enough to
+        // distort performance measurements when it is serialized to logs/traces.
+        let rpc_span = span!(tracing::Level::INFO, $name, "mod" = "rpc.rs");
 
         // assign parent span from external context
         rpc_span.set_parent(parent_context);

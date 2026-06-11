@@ -33,6 +33,8 @@ const GUEST_COMPONENTS_PROCS_OPTION: &str = "agent.guest_components_procs";
 const IMAGE_REGISTRY_AUTH_OPTION: &str = "agent.image_registry_auth";
 #[cfg(feature = "guest-pull")]
 const IMAGE_CVM_ROLE_OPTION: &str = "agent.image_cvm_role";
+#[cfg(feature = "guest-pull")]
+const IMAGE_CVM_REF_OPTION: &str = "agent.image_cvm_ref";
 
 // Configure the proxy settings for HTTPS requests in the guest,
 // to solve the problem of not being able to access the specified image in some cases.
@@ -128,6 +130,8 @@ pub struct AgentConfig {
     pub image_registry_auth: String,
     #[cfg(feature = "guest-pull")]
     pub image_cvm_role: ImageCVMRole,
+    #[cfg(feature = "guest-pull")]
+    pub image_cvm_ref: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +155,8 @@ pub struct AgentConfigBuilder {
     pub image_registry_auth: Option<String>,
     #[cfg(feature = "guest-pull")]
     pub image_cvm_role: Option<ImageCVMRole>,
+    #[cfg(feature = "guest-pull")]
+    pub image_cvm_ref: Option<String>,
 }
 
 macro_rules! config_override {
@@ -220,6 +226,8 @@ impl Default for AgentConfig {
             image_registry_auth: String::from(""),
             #[cfg(feature = "guest-pull")]
             image_cvm_role: ImageCVMRole::default(),
+            #[cfg(feature = "guest-pull")]
+            image_cvm_ref: String::from(""),
         }
     }
 }
@@ -261,6 +269,8 @@ impl FromStr for AgentConfig {
         config_override!(agent_config_builder, agent_config, image_registry_auth);
         #[cfg(feature = "guest-pull")]
         config_override!(agent_config_builder, agent_config, image_cvm_role);
+        #[cfg(feature = "guest-pull")]
+        config_override!(agent_config_builder, agent_config, image_cvm_ref);
 
         Ok(agent_config)
     }
@@ -389,6 +399,13 @@ impl AgentConfig {
                 IMAGE_CVM_ROLE_OPTION,
                 config.image_cvm_role,
                 get_image_cvm_role_value
+            );
+            #[cfg(feature = "guest-pull")]
+            parse_cmdline_param!(
+                param,
+                IMAGE_CVM_REF_OPTION,
+                config.image_cvm_ref,
+                get_string_value
             );
         }
 

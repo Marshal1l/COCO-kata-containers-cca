@@ -94,7 +94,7 @@ use libc::{self, c_char, c_ushort, pid_t, winsize, TIOCSWINSZ};
 use std::fs;
 use std::os::unix::prelude::PermissionsExt;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nix::unistd::{Gid, Uid};
 use std::fs::{File, OpenOptions};
@@ -183,11 +183,12 @@ pub struct AgentService {
 }
 
 impl AgentService {
-    #[instrument]
+    #[instrument(skip_all)]
     async fn do_create_container(
         &self,
         req: protocols::agent::CreateContainerRequest,
     ) -> Result<()> {
+        let total_start = Instant::now();
         // create the proc_io first, in case there's some error occur below, thus we can make sure
         // the io stream closed when error occur.
         let proc_io = if AGENT_CONFIG.passfd_listener_port != 0 {
@@ -201,6 +202,9 @@ impl AgentService {
         kata_sys_util::validate::verify_id(&cid)?;
 
         let use_sandbox_pidns = req.sandbox_pidns();
+        let storage_count = req.storages.len();
+        let device_count = req.devices.len();
+        let shared_mount_count = req.shared_mounts.len();
 
         let mut oci = match req.OCI.into_option() {
             Some(spec) => spec.into(),
@@ -211,11 +215,26 @@ impl AgentService {
         };
 
         let container_name = k8s::container_name(&oci);
-
-        info!(sl(), "receive createcontainer, spec: {:?}", &oci);
+        let mount_count = oci.mounts().as_ref().map_or(0, |mounts| mounts.len());
+        let env_count = match oci.process() {
+            Some(process) => process.env().as_ref().map_or(0, |envs| envs.len()),
+            None => 0,
+        };
+        let arg_count = match oci.process() {
+            Some(process) => process.args().as_ref().map_or(0, |args| args.len()),
+            None => 0,
+        };
         info!(
             sl(),
-            "receive createcontainer, storages: {:?}", &req.storages
+            "receive createcontainer";
+            "container_id" => cid.clone(),
+            "storages" => storage_count,
+            "devices" => device_count,
+            "shared_mounts" => shared_mount_count,
+            "oci_mounts" => mount_count,
+            "envs" => env_count,
+            "args" => arg_count,
+            "sandbox_pidns" => use_sandbox_pidns
         );
 
         // Some devices need some extra processing (the ones invoked with
@@ -223,9 +242,17 @@ impl AgentService {
         // updates the devices listed in the OCI spec, so that they actually
         // match real devices inside the VM. This step is necessary since we
         // cannot predict everything from the caller.
+        let stage_start = Instant::now();
         add_devices(&req.devices, &mut oci, &self.sandbox).await?;
+        info!(
+            sl(),
+            "createcontainer stage add_devices completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
 
         if let Some(cdh) = self.cdh_client.as_ref() {
+            let stage_start = Instant::now();
             let process = oci
                 .process_mut()
                 .as_mut()
@@ -241,6 +268,12 @@ impl AgentService {
                     }
                 }
             }
+            info!(
+                sl(),
+                "createcontainer stage unseal_env completed";
+                "container_id" => cid.clone(),
+                "elapsed_ms" => stage_start.elapsed().as_millis()
+            );
         }
 
         // Both rootfs and volumes (invoked with --volume for instance) will
@@ -250,8 +283,16 @@ impl AgentService {
         // After all those storages have been processed, no matter the order
         // here, the agent will rely on rustjail (using the oci.Mounts
         // list) to bind mount all of them inside the container.
+        let stage_start = Instant::now();
         let m = add_storages(sl(), req.storages, &self.sandbox, Some(req.container_id)).await?;
+        info!(
+            sl(),
+            "createcontainer stage add_storages completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
 
+        let stage_start = Instant::now();
         let mut s = self.sandbox.lock().await;
         s.container_mounts.insert(cid.clone(), m);
 
@@ -259,12 +300,25 @@ impl AgentService {
 
         // Append guest hooks
         append_guest_hooks(&s, &mut oci)?;
+        info!(
+            sl(),
+            "createcontainer stage update_spec completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
 
         // write spec to bundle path, hooks might
         // read ocispec
+        let stage_start = Instant::now();
         let olddir = setup_bundle(&cid, &mut oci)?;
         // restore the cwd for kata-agent process.
         defer!(unistd::chdir(&olddir).unwrap());
+        info!(
+            sl(),
+            "createcontainer stage setup_bundle completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
 
         // determine which cgroup driver to take and then assign to use_systemd_cgroup
         // systemd: "[slice]:[prefix]:[name]"
@@ -294,6 +348,7 @@ impl AgentService {
             container_name,
         };
 
+        let stage_start = Instant::now();
         let mut ctr: LinuxContainer = LinuxContainer::new(
             cid.as_str(),
             CONTAINER_BASE,
@@ -301,18 +356,32 @@ impl AgentService {
             opts,
             &sl(),
         )?;
+        info!(
+            sl(),
+            "createcontainer stage linux_container_new completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
 
         let pipe_size = AGENT_CONFIG.container_pipe_size;
 
+        let stage_start = Instant::now();
         let p = if let Some(p) = oci.process() {
             Process::new(&sl(), p, cid.as_str(), true, pipe_size, proc_io)?
         } else {
             info!(sl(), "no process configurations!");
             return Err(anyhow!(nix::Error::EINVAL));
         };
+        info!(
+            sl(),
+            "createcontainer stage process_new completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
 
         // if starting container failed, we will do some rollback work
         // to ensure no resources are leaked.
+        let stage_start = Instant::now();
         if let Err(err) = ctr.start(p).await {
             error!(sl(), "failed to start container: {:?}", err);
             if let Err(e) = ctr.destroy().await {
@@ -323,11 +392,29 @@ impl AgentService {
             }
             return Err(err);
         }
+        info!(
+            sl(),
+            "createcontainer stage rustjail_start completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
 
+        let stage_start = Instant::now();
         s.update_shared_pidns(&ctr)?;
         s.setup_shared_mounts(&ctr, &req.shared_mounts)?;
         s.add_container(ctr);
-        info!(sl(), "created container!");
+        info!(
+            sl(),
+            "createcontainer stage update_sandbox_state completed";
+            "container_id" => cid.clone(),
+            "elapsed_ms" => stage_start.elapsed().as_millis()
+        );
+        info!(
+            sl(),
+            "created container";
+            "container_id" => cid,
+            "total_ms" => total_start.elapsed().as_millis()
+        );
 
         Ok(())
     }

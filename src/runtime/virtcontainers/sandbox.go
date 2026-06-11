@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	v1 "github.com/containerd/cgroups/stats/v1"
 	v2 "github.com/containerd/cgroups/v2/stats"
@@ -81,6 +82,7 @@ const (
 
 	sandboxMountsDir         = "sandbox-mounts"
 	imageCVMAnnotation       = "io.kata-containers.is-image-cvm"
+	imageCVMNoPrefetch       = "io.kata-containers.disable-image-cvm-prefetch"
 	imageNameAnnotation      = "io.kubernetes.cri.image-name"
 	agentImageCVMRoleParam   = "agent.image_cvm_role"
 	agentImageCVMRefParam    = "agent.image_cvm_ref"
@@ -646,7 +648,6 @@ func newSandbox(ctx context.Context, sandboxConfig SandboxConfig, factory Factor
 		}()
 
 	}
-	s.Logger().Info("MZHAnnotations :", &sandboxConfig.Containers[0])
 	setHypervisorConfigAnnotations(&sandboxConfig)
 
 	coldPlugVFIO, err := s.coldOrHotPlugVFIO(&sandboxConfig)
@@ -700,11 +701,21 @@ func setHypervisorConfigAnnotations(sandboxConfig *SandboxConfig) {
 			sandboxConfig.HypervisorConfig.IsImageVM = false
 			if isImageCvmValue == "false" {
 				_ = sandboxConfig.HypervisorConfig.AddKernelParam(Param{Key: agentImageCVMRoleParam, Value: agentImageCVMRoleRuntime})
-				if imageRef := sandboxConfig.Containers[0].Annotations[imageNameAnnotation]; imageRef != "" {
+				disablePrefetch := isTruthyAnnotation(sandboxConfig.Containers[0].Annotations[imageCVMNoPrefetch])
+				if imageRef := sandboxConfig.Containers[0].Annotations[imageNameAnnotation]; imageRef != "" && !disablePrefetch {
 					_ = sandboxConfig.HypervisorConfig.AddKernelParam(Param{Key: agentImageCVMRefParam, Value: imageRef})
 				}
 			}
 		}
+	}
+}
+
+func isTruthyAnnotation(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1924,35 +1935,59 @@ func (s *Sandbox) createContainers(ctx context.Context) error {
 	defer span.End()
 
 	for i := range s.config.Containers {
+		stageStart := time.Now()
 		c, err := newContainer(ctx, s, &s.config.Containers[i])
 		if err != nil {
 			return err
 		}
+		s.Logger().WithFields(logrus.Fields{
+			"container":  c.id,
+			"elapsed_ms": time.Since(stageStart).Milliseconds(),
+		}).Info("[MZH] createContainers stage newContainer completed")
+
+		stageStart = time.Now()
 		if err := c.create(ctx); err != nil {
 			return err
 		}
+		s.Logger().WithFields(logrus.Fields{
+			"container":  c.id,
+			"elapsed_ms": time.Since(stageStart).Milliseconds(),
+		}).Info("[MZH] createContainers stage container.create completed")
 
+		stageStart = time.Now()
 		if err := s.addContainer(c); err != nil {
 			return err
 		}
+		s.Logger().WithFields(logrus.Fields{
+			"container":  c.id,
+			"elapsed_ms": time.Since(stageStart).Milliseconds(),
+		}).Info("[MZH] createContainers stage addContainer completed")
 	}
 
 	// Update resources after having added containers to the sandbox, since
 	// container status is required to know if more resources should be added.
+	stageStart := time.Now()
 	if err := s.updateResources(ctx); err != nil {
 		return err
 	}
+	s.Logger().WithField("elapsed_ms", time.Since(stageStart).Milliseconds()).Info("[MZH] createContainers stage updateResources completed")
+	stageStart = time.Now()
 	if err := s.resourceControllerUpdate(ctx); err != nil {
 		return err
 	}
+	s.Logger().WithField("elapsed_ms", time.Since(stageStart).Milliseconds()).Info("[MZH] createContainers stage resourceControllerUpdate completed")
 
+	stageStart = time.Now()
 	if err := s.checkVCPUsPinning(ctx); err != nil {
 		return err
 	}
+	s.Logger().WithField("elapsed_ms", time.Since(stageStart).Milliseconds()).Info("[MZH] createContainers stage checkVCPUsPinning completed")
 
+	stageStart = time.Now()
 	if err := s.storeSandbox(ctx); err != nil {
 		return err
 	}
+	s.Logger().WithField("elapsed_ms", time.Since(stageStart).Milliseconds()).Info("[MZH] createContainers stage storeSandbox completed")
 	return nil
 }
 

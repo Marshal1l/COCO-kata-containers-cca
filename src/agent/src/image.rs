@@ -7,7 +7,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use image_rs::image::ImageClient;
-use image_rs::shared_rootfs;
+use image_rs::shared_rootfs::{self, SharedRootfsBundleEntry};
 use image_rs::vsock_ttrpc_client;
 use kata_sys_util::validate::verify_id;
 use oci_spec::runtime as oci;
@@ -220,6 +220,44 @@ impl ImageService {
                 }
             };
         } else {
+            let marked_shared_rootfs_pending = match shared_rootfs::read_shared_rootfs_cache_entry(
+                image,
+            ) {
+                Ok(Some(_)) => false,
+                Ok(None) => match shared_rootfs::mark_shared_rootfs_cache_pending(image) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            sl(),
+                            "failed to mark shared rootfs cache pending before image pull";
+                            "image_ref" => image,
+                            "error" => format!("{err:#}")
+                        );
+                        false
+                    }
+                },
+                Err(err) => {
+                    warn!(
+                        sl(),
+                        "shared rootfs cache entry invalid before image pull";
+                        "image_ref" => image,
+                        "error" => format!("{err:#}")
+                    );
+                    match shared_rootfs::mark_shared_rootfs_cache_pending(image) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            warn!(
+                                sl(),
+                                "failed to mark shared rootfs cache pending after invalid entry";
+                                "image_ref" => image,
+                                "error" => format!("{err:#}")
+                            );
+                            false
+                        }
+                    }
+                }
+            };
+
             let start = Instant::now();
             let res = self
                 .image_client
@@ -233,13 +271,33 @@ impl ImageService {
                         "[MZH]pull and unpack image {image_id:?}, cid: {cid:?} succeeded. (pull took: {} ms)",
                         duration.as_millis()
                         );
+                    if let Err(err) =
+                        shared_rootfs::write_shared_rootfs_bundle_entry(&SharedRootfsBundleEntry {
+                            image_ref: image.to_string(),
+                            image_id: image_id.clone(),
+                            bundle_path: bundle_path.clone(),
+                        })
+                    {
+                        warn!(
+                            sl(),
+                            "failed to write shared rootfs bundle entry";
+                            "image_ref" => image,
+                            "image_id" => image_id.clone(),
+                            "bundle_path" => bundle_path.display().to_string(),
+                            "error" => format!("{err:#}")
+                        );
+                    }
                     warm_shared_rootfs_cache_async(
                         image.to_string(),
                         image_id,
                         bundle_path.clone(),
+                        marked_shared_rootfs_pending,
                     );
                 }
                 Err(e) => {
+                    if marked_shared_rootfs_pending {
+                        shared_rootfs::clear_shared_rootfs_cache_pending(image);
+                    }
                     error!(
                         sl(),
                         "pull and unpack image {image:?}, cid: {cid:?} failed with {:?}.",
@@ -254,15 +312,23 @@ impl ImageService {
     }
 }
 
-fn warm_shared_rootfs_cache_async(image_ref: String, image_id: String, bundle_path: PathBuf) {
+fn warm_shared_rootfs_cache_async(
+    image_ref: String,
+    image_id: String,
+    bundle_path: PathBuf,
+    owns_pending_marker: bool,
+) {
     if shared_rootfs::read_shared_rootfs_cache_entry(&image_ref)
         .map(|entry| entry.is_some())
         .unwrap_or(false)
     {
+        if owns_pending_marker {
+            shared_rootfs::clear_shared_rootfs_cache_pending(&image_ref);
+        }
         info!(sl(), "shared rootfs cache already warm"; "image_ref" => image_ref);
         return;
     }
-    if shared_rootfs::shared_rootfs_cache_pending(&image_ref) {
+    if !owns_pending_marker && shared_rootfs::shared_rootfs_cache_pending(&image_ref) {
         info!(sl(), "shared rootfs cache warmup already pending"; "image_ref" => image_ref);
         return;
     }
@@ -274,6 +340,9 @@ fn warm_shared_rootfs_cache_async(image_ref: String, image_id: String, bundle_pa
             &image_id,
             &bundle_path,
         );
+        if owns_pending_marker {
+            shared_rootfs::clear_shared_rootfs_cache_pending(&image_ref);
+        }
 
         match result {
             Ok(entry) => info!(
@@ -281,6 +350,9 @@ fn warm_shared_rootfs_cache_async(image_ref: String, image_id: String, bundle_pa
                 "shared rootfs cache warmup completed";
                 "image_ref" => image_ref,
                 "share_id" => entry.share_id,
+                "fs_type" => entry.fs_type,
+                "image_size" => entry.image_size,
+                "pages" => entry.page_count,
                 "elapsed_ms" => start.elapsed().as_millis()
             ),
             Err(err) => warn!(
@@ -326,8 +398,13 @@ pub async fn init_image_service() {
     let image_service = ImageService::new();
     *IMAGE_SERVICE.lock().await = Some(image_service);
     if AGENT_CONFIG.image_cvm_role == ImageCVMRole::Runtime {
+        let image_cvm_ref = AGENT_CONFIG.image_cvm_ref.clone();
         tokio::spawn(async {
-            vsock_ttrpc_client::preconnect_fast_image_share().await;
+            if image_cvm_ref.is_empty() {
+                vsock_ttrpc_client::preconnect_fast_image_share().await;
+            } else {
+                vsock_ttrpc_client::prefetch_prepare_rootfs_fast(image_cvm_ref).await;
+            }
         });
     }
 }

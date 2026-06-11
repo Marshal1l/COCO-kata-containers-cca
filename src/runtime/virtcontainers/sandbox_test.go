@@ -108,6 +108,54 @@ func TestCreateMockSandbox(t *testing.T) {
 	defer cleanUp()
 }
 
+func TestImageCVMNoPrefetchAnnotation(t *testing.T) {
+	tests := []struct {
+		name            string
+		annotationValue string
+		expectImageRef  bool
+	}{
+		{"unset", "", true},
+		{"false", "false", true},
+		{"zero", "0", true},
+		{"true", "true", false},
+		{"one", "1", false},
+		{"yes", " yes ", false},
+		{"on", "ON", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			container := ContainerConfig{
+				Annotations: map[string]string{
+					imageCVMAnnotation:  "false",
+					imageNameAnnotation: "docker.m.daocloud.io/library/busybox:latest",
+				},
+			}
+			if tt.annotationValue != "" {
+				container.Annotations[imageCVMNoPrefetch] = tt.annotationValue
+			}
+			config := SandboxConfig{
+				Containers:       []ContainerConfig{container},
+				HypervisorConfig: HypervisorConfig{},
+			}
+
+			setHypervisorConfigAnnotations(&config)
+
+			assert.True(t, containsParam(config.HypervisorConfig.KernelParams, agentImageCVMRoleParam, agentImageCVMRoleRuntime))
+			assert.Equal(t, tt.expectImageRef, containsParam(config.HypervisorConfig.KernelParams, agentImageCVMRefParam, "docker.m.daocloud.io/library/busybox:latest"))
+		})
+	}
+}
+
+func containsParam(params []Param, key, value string) bool {
+	for _, param := range params {
+		if param.Key == key && param.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCalculateSandboxCPUs(t *testing.T) {
 	sandbox := &Sandbox{}
 	sandbox.config = &SandboxConfig{}
